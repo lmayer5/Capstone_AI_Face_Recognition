@@ -1,0 +1,9 @@
+opencv-python>=4.5.5
+mediapipe>=0.8.9
+deepface>=0.0.75
+numpy>=1.20.0
+scipy>=1.7.0
+tf-keras>=2.15.0
+
+# Optional / Platform Specific
+# RPi.GPIO; platform_system == "Linux" and platform_machine == "armv7l"
