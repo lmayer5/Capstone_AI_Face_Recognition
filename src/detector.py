@@ -1,16 +1,33 @@
 import cv2
 import mediapipe as mp
-import time
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import config
+
 
 class FaceDetector:
-    def __init__(self, min_detection_confidence=0.5):
+    def __init__(self, min_detection_confidence=None, model_selection=None):
         """
         Initialize MediaPipe Face Detection.
+        
+        Args:
+            min_detection_confidence: Override detection confidence (0.0–1.0).
+            model_selection: 0 = short-range (< 2m, faster), 1 = full-range (< 5m).
+                             Defaults to config value (0 on Pi, 1 on desktop).
         """
+        confidence = min_detection_confidence or config.DETECTION_MIN_CONFIDENCE
+        model_sel = model_selection if model_selection is not None else config.DETECTION_MODEL_SELECTION
+
         self.mp_face_detection = mp.solutions.face_detection
         self.face_detection = self.mp_face_detection.FaceDetection(
-            min_detection_confidence=min_detection_confidence
+            min_detection_confidence=confidence,
+            model_selection=model_sel
         )
+
+        mode_label = "short-range (fast)" if model_sel == 0 else "full-range"
+        print(f"[DETECTOR] MediaPipe Face Detection initialized (model={mode_label}, confidence={confidence})")
     
     def detect(self, frame):
         """

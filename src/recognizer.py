@@ -3,19 +3,24 @@ import pickle
 import numpy as np
 from deepface import DeepFace
 from scipy.spatial.distance import cosine
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import config
+
 
 class FaceIdentifier:
-    def __init__(self, db_path='db/authorized_users'):
+    def __init__(self, db_path=None):
         """
         Initialize FaceIdentifier.
         
         Args:
             db_path: Path to the directory containing user embeddings (.pkl files).
         """
-        self.db_path = db_path
+        self.db_path = db_path or config.DB_PATH
         self.users = {}
-        self.model_name = "Facenet512"
-        self.threshold = 0.4 # Threshold for Cosine distance (0.4 is reliable for FaceNet512)
+        self.model_name = config.RECOGNITION_MODEL
+        self.threshold = config.RECOGNITION_THRESHOLD
         
         # Load known users immediately
         self.load_users()
@@ -53,8 +58,6 @@ class FaceIdentifier:
             Tuple (name, distance). Name is "Unknown" if no match found.
         """
         try:
-            # Generate embedding
-            # enforce_detection=False because we already detected the face in Stage 1
             embedding_objs = DeepFace.represent(
                 img_path=face_crop,
                 model_name=self.model_name,
@@ -65,7 +68,6 @@ class FaceIdentifier:
             if not embedding_objs:
                 return "Unknown", 0.0
             
-            # DeepFace.represent returns a list of dicts. We have one face crop.
             target_embedding = embedding_objs[0]["embedding"]
             
             best_match_name = "Unknown"
@@ -101,8 +103,8 @@ class FaceIdentifier:
         embedding_objs = DeepFace.represent(
             img_path=face_image,
             model_name=self.model_name,
-            enforce_detection=False, # We assume manual capture or pre-check
-            detector_backend="skip" # We are passing a crop from MediaPipe
+            enforce_detection=False,
+            detector_backend="skip"
         )
         if embedding_objs:
             return embedding_objs[0]["embedding"]
