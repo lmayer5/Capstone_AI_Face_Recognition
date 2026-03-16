@@ -6,6 +6,7 @@ from src.database import EventLogger
 from src.hardware import DoorLock
 from src.camera import get_camera
 from src.async_utils import FaceRecognitionThread
+import RPi.GPIO as GPIO
 import config
 
 def main():
@@ -29,7 +30,9 @@ def main():
     print("Press 'q' to quit." if not config.HEADLESS else "Press Ctrl+C to quit.")
 
     try:
+        print("🟢 Capstone System Active! Press Ctrl+C to shut down.")
         while True:
+            success, frame = cap.read()
             # 0. Check Auto-Lock Logic
             # Detect if door was unlocked by thread
             if not door_lock.is_locked:
@@ -109,13 +112,14 @@ def main():
     except KeyboardInterrupt:
         print("\nKeyboard interrupt received.")
     finally:
-        print("Stopping...")
+        print("🧹 Turning off Camera and GPIO pins...")
         recog_thread.stop()
         cap.release()
         if not config.HEADLESS:
             cv2.destroyAllWindows()
         logger.close()
         door_lock.cleanup()
+        GPIO.cleanup()
 
 
 if __name__ == "__main__":
