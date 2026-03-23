@@ -21,6 +21,7 @@ class FaceIdentifier:
         self.users = {}
         self.model_name = config.RECOGNITION_MODEL
         self.threshold = config.RECOGNITION_THRESHOLD
+        self.last_db_mtime = 0
         
         # Load known users immediately
         self.load_users()
@@ -45,6 +46,11 @@ class FaceIdentifier:
                 except Exception as e:
                     print(f"Error loading {file_path}: {e}")
         
+        try:
+            self.last_db_mtime = os.path.getmtime(self.db_path)
+        except Exception:
+            pass
+
         print(f"Loaded {len(self.users)} users: {list(self.users.keys())}")
 
     def verify(self, face_crop):
@@ -57,6 +63,14 @@ class FaceIdentifier:
         Returns:
             Tuple (name, distance). Name is "Unknown" if no match found.
         """
+        # Auto-reload if db directory changed
+        try:
+            if os.path.getmtime(self.db_path) > self.last_db_mtime:
+                print("[RECOGNIZER] New users detected! Reloading database...")
+                self.load_users()
+        except Exception:
+            pass
+
         try:
             embedding_objs = DeepFace.represent(
                 img_path=face_crop,

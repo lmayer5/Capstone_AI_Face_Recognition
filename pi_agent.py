@@ -176,6 +176,22 @@ class PiEnrollmentAgent:
             print(f"[PI] Saved face embedding to {save_path}")
             rfid_uid = self._read_rfid_uid()
             print(f"[PI] Captured RFID UID: {rfid_uid}")
+            
+            # --- Save to local RFID JSON DB ---
+            rfid_db_path = os.path.join(config.DB_PATH, "..", "rfid_database.json")
+            import json
+            rfid_db = {}
+            if os.path.exists(rfid_db_path):
+                try:
+                    with open(rfid_db_path, "r") as f:
+                        rfid_db = json.load(f)
+                except Exception:
+                    pass
+            rfid_db[rfid_uid] = task["faceName"]
+            with open(rfid_db_path, "w") as f:
+                json.dump(rfid_db, f, indent=4)
+            print(f"[PI] Synchronized new user to local RFID database.")
+
             self.report_result(task["jobId"], task["employeeId"], task["faceName"], True, rfid_uid=rfid_uid)
         except Exception as exc:
             print(f"[PI] Enrollment failed: {exc}")

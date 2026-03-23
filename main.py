@@ -1,5 +1,6 @@
 import cv2
 import time
+import numpy as np
 from src.detector import FaceDetector
 from src.recognizer import FaceIdentifier
 from src.database import EventLogger
@@ -10,6 +11,33 @@ import RPi.GPIO as GPIO
 import evdev
 import select
 import config
+import os
+import json
+from pi_agent import submit_access_attempt
+
+def get_user_database():
+    """Loads the RFID database dynamically from disk."""
+    rfid_db_path = os.path.join(config.DB_PATH, "..", "rfid_database.json")
+    if not os.path.exists(rfid_db_path):
+        # Create a default database for backward compatibility
+        default_db = {
+            "0007649730": "Shiv",  # Card ID #1
+            "0007655046": "Luke"   # Card ID #2
+        }
+        try:
+            os.makedirs(os.path.dirname(rfid_db_path), exist_ok=True)
+            with open(rfid_db_path, "w") as f:
+                json.dump(default_db, f, indent=4)
+        except Exception:
+            pass
+        return default_db
+        
+    try:
+        with open(rfid_db_path, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[ERROR] Could not load RFID database: {e}")
+        return {}
 
 # ---------------------------------------------------------
 # 🧰 THE USB RFID HELPER (Translates keyboard clicks to an ID)
@@ -82,158 +110,204 @@ def main():
     recog_thread = FaceRecognitionThread(recognizer, door_lock, logger)
     recog_thread.start()
 
-    #RFID Card IDs (replace with your actual card IDs)
-    USER_DATABASE = {
-        "0007649730": "Shiv",  # Card ID #1
-        "0007655046": "Luke"     # Card ID #2
-    }
     # 🧠"Short Term" Memory Variables
     recent_face_name = None
     recent_face_time = 0.0
-    MEMORY_WINDOW = 5.0  # How many seconds the Pi remembers a face
-    # Use platform-aware camera
-    cap = get_camera()
     
-    # Lock Logic State
-    unlock_expiry_time = None 
+    # State tracking
+    cap = None
+    camera_active = False
+    last_activity_time = time.time()
     
+    pending_rfid_user = None
+    pending_rfid_time = 0.0
+    pending_rfid_card = None
+    RFID_FACE_TIMEOUT = 15.0 # Seconds to show face after swiping
+    
+    unlock_expiry_time = None
+    door_was_opened_while_unlocked = False
+
+    def wake_camera():
+        nonlocal cap, camera_active, last_activity_time
+        if not camera_active:
+            print("[SYSTEM] Motion/RFID detected! Waking up camera...")
+            cap = get_camera()
+            camera_active = True
+        last_activity_time = time.time()
+
+    def sleep_camera():
+        nonlocal cap, camera_active
+        if camera_active:
+            print("[SYSTEM] Putting camera to sleep (No activity or Door Secured)...")
+            if cap: 
+                cap.release()
+                cap = None
+            camera_active = False
+            door_lock.set_unknown() # Red LED idle state
+
     print("Starting Main Loop (Threaded)...")
     print("Press 'q' to quit." if not config.HEADLESS else "Press Ctrl+C to quit.")
 
     try:
         print("🟢 Capstone System Active! Press Ctrl+C to shut down.")
-        while True:
-            # ----------------------------------------
-            # 👁️ 1. THE AI CAMERA PART
-            # ----------------------------------------
-            success, frame = cap.read()
-            # 0. Check Auto-Lock Logic
-            # Detect if door was unlocked by thread
-           # if not door_lock.is_locked:
-           if not success: continue
-                # If we haven't set a timer yet, set it now
-                if unlock_expiry_time is None:
-                    unlock_expiry_time = time.time() + config.AUTO_LOCK_DELAY
-                    print("[SYSTEM] Face authenticated. Timer started, please scan RFID card within the next few seconds.")
-                
-                # Check expiry
-                elif time.time() > unlock_expiry_time:
-                    door_lock.lock()
-                    unlock_expiry_time = None
-                    print("[SYSTEM] Auto-locking door.")
-            else:
-                # Reset timer if locked
-                unlock_expiry_time = None
-
-            ret, frame = cap.read()
-            if not ret:
-                print("[ERROR] Failed to grab frame. Retrying...")
-                time.sleep(0.1)
-                continue
-            
-            # 1. Detection (Main Thread - Fast)
-            start_det = time.time()
-            faces_bboxes = detector.detect(frame)
-            
-            # 2. Delegate to Recognition Thread
-            # Only send if thread is ready (queue not full) and we have a face
-            if faces_bboxes and not recog_thread.input_queue.full():
-                # Set scanning LED
-                door_lock.set_scanning()
-                
-                # Pick largest face
-                target_face = max(faces_bboxes, key=lambda b: b[2] * b[3])
-                (x, y, w, h) = target_face
-                
-                H, W, _ = frame.shape
-                x = max(0, x)
-                y = max(0, y)
-                w = min(w, W - x)
-                h = min(h, H - y)
-                
-                face_crop = frame[y:y+h, x:x+w]
-                if face_crop.size > 0:
-                    recog_thread.input_queue.put(face_crop)
-
-            # 3. Draw UI
-            if not config.HEADLESS:
-                # Draw all detected faces
-                for (x, y, w, h) in faces_bboxes:
-                    name = recog_thread.current_user_name
-                    
-                    # 🧠 THE 5-SECOND MEMORY
-                    # If the camera sees a real person, remember their name and the time!
-                    if name != "Unknown" and name != "Scanning...":
-                        recent_face_name = name
-                        recent_face_time = time.time()
-
-                    color = (0, 255, 0) if name != "Unknown" and name != "Scanning..." else (0, 0, 255)
-                    if name == "Scanning...": color = (255, 255, 0)
-
-                    cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
-                    cv2.putText(frame, name, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-                # Global Status
-                if not door_lock.is_locked:
-                     remaining = int(unlock_expiry_time - time.time()) if unlock_expiry_time else 0
-                     cv2.putText(frame, f"ACCESS GRANTED ({remaining}s)", (50, frame.shape[0] - 50), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
-
-                # FPS
-                fps = 1.0 / (time.time() - start_det + 1e-6)
-                cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                
-                cv2.imshow('Face Recognition System', frame)
-
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-            else:
-                # Headless: small delay to prevent CPU spin
-                door_lock.set_unknown() # Set to unknown state when not showing video
-                time.sleep(0.01)
-
-            # ----------------------------------------
-            # 💳2. THE NON-BLOCKING RFID CHECK
-            # ----------------------------------------
-            card_id = rfid_reader.read_id_no_block()
         
+        while True:
+            # 1. 🚶 Check PIR Motion Sensor
+            if door_lock.is_motion_detected():
+                wake_camera()
+
+            # 2. 💳 Check RFID (Continuous)
+            card_id = rfid_reader.read_id_no_block()
             if card_id:
                 print(f"\n💳 Card Swiped! ID: {card_id}")
+                wake_camera() # Wake camera immediately
                 
-                # Step A: Is this card in our database?
+                USER_DATABASE = get_user_database()
                 if card_id in USER_DATABASE:
                     expected_name = USER_DATABASE[card_id]
-                    print(f"✅ Valid Card. This card belongs to: {expected_name}")
+                    print(f"✅ Valid Card ({expected_name}). Please look at the camera for authentication.")
                     
-                    # Step B: Did the camera see this EXACT person recently?
-                    time_since_seen = time.time() - recent_face_time
+                    pending_rfid_user = expected_name
+                    pending_rfid_time = time.time()
+                    pending_rfid_card = card_id
                     
-                    if recent_face_name == expected_name and time_since_seen <= MEMORY_WINDOW:
-                        print(f"🔓 2FA SUCCESS! Face ({recent_face_name}) matches Card. Opening door...")
-                        
-                        door_lock.unlock() # Trigger the physical lock
-                        recent_face_name = None # Wipe the memory so they can't reuse the swipe!
-                        
-                    else:
-                        print(f"❌ 2FA FAILED! The camera doesn't see {expected_name} right now.")
-                        
+                    # 🌐 Web App Webhook: Send Tap In log
+                    try:
+                        submit_access_attempt(card_id, f"Pending Face Scan: {expected_name}")
+                    except Exception as e:
+                        print(f"[PI] Web App Log Warning: {e}")
                 else:
                     print("❌ Unknown Card! Access Denied.")
+                    try:
+                        submit_access_attempt(card_id, "Unknown Card / Denied")
+                    except Exception: pass
 
+            # 3. 💤 Check Auto-Sleep Timeout
+            if camera_active and (time.time() - last_activity_time > config.CAMERA_IDLE_TIMEOUT) and door_lock.is_locked:
+                sleep_camera()
+                
+            # 4. 👁️ Handle Camera Frame or Sleep UI
+            frame = None
+            if camera_active and cap:
+                success, f = cap.read()
+                if success:
+                    frame = f
+                    # Process frame
+                    faces_bboxes = detector.detect(frame)
+                    
+                    # If faces found, update activity time so it stays awake!
+                    if faces_bboxes:
+                        last_activity_time = time.time()
+                    
+                    if faces_bboxes and not recog_thread.input_queue.full():
+                        door_lock.set_scanning()
+                        target_face = max(faces_bboxes, key=lambda b: b[2] * b[3])
+                        (x, y, w, h) = target_face
+                        H, W, _ = frame.shape
+                        x, y, w, h = max(0, x), max(0, y), min(w, W - x), min(h, H - y)
+                        face_crop = frame[y:y+h, x:x+w]
+                        if face_crop.size > 0:
+                            recog_thread.input_queue.put(face_crop)
+
+                    # Update UI 
+                    if not config.HEADLESS:
+                        for (x, y, w, h) in faces_bboxes:
+                            name = recog_thread.current_user_name
+                            # 🧠 Remember the face
+                            if name != "Unknown" and name != "Scanning...":
+                                recent_face_name = name
+                                recent_face_time = time.time()
+
+                            color = (0, 255, 0) if name != "Unknown" and name != "Scanning..." else (0, 0, 255)
+                            if name == "Scanning...": color = (255, 255, 0)
+                            cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+                            cv2.putText(frame, name, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                else:
+                    # If read failed, gracefully sleep to recover
+                    sleep_camera()
+            else:
+                # Sleep UI
+                if not config.HEADLESS:
+                    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                    cv2.putText(frame, "SYSTEM IDLE", (200, 220), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (100, 100, 100), 2)
+                    cv2.putText(frame, "Waiting for PIR Motion or RFID...", (120, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 150, 150), 2)
+
+            # 5. 🔓 Lock Logic & Reversed 2FA (RFID -> Face) Logic
+            # Only process 2FA match if door is LOCKED
+            if door_lock.is_locked:
+                if pending_rfid_user:
+                    # Timeout check
+                    if time.time() - pending_rfid_time > RFID_FACE_TIMEOUT:
+                        print(f"❌ 2FA Timeout! No matching face for {pending_rfid_user} seen.")
+                        pending_rfid_user = None
+                    else:
+                        # Match check
+                        if recent_face_name == pending_rfid_user and (time.time() - recent_face_time <= RFID_FACE_TIMEOUT):
+                            print(f"🔓 2FA SUCCESS! Face ({recent_face_name}) matches Card. Opening door...")
+                            door_lock.unlock()
+                            
+                            # 🌐 Web App Webhook: Send Success Log
+                            try:
+                                submit_access_attempt(pending_rfid_card, recent_face_name) 
+                            except Exception: pass
+                            
+                            pending_rfid_user = None
+                            recent_face_name = None
+                            door_was_opened_while_unlocked = False
+                            unlock_expiry_time = time.time() + config.AUTO_LOCK_DELAY
+            else:
+                # Door is currently UNLOCKED
+                if door_lock.is_door_open():
+                    door_was_opened_while_unlocked = True
+                    # Push back expiry so it doesn't lock while open
+                    unlock_expiry_time = time.time() + config.AUTO_LOCK_DELAY
+                    
+                # If door opened and subsequently closed, or timer expires:
+                if (door_was_opened_while_unlocked and not door_lock.is_door_open()) or (time.time() > unlock_expiry_time):
+                    print("[SYSTEM] Door Secured (Closed or Timer Expired). Auto-locking.")
+                    door_lock.lock()
+                    unlock_expiry_time = None
+                    door_was_opened_while_unlocked = False
+                    
+                    # Immediately power off camera as requested!
+                    sleep_camera()
+
+            # 6. Global Draw UI
+            if not config.HEADLESS and frame is not None:
+                # Global Status
+                if not door_lock.is_locked:
+                     rem = int(unlock_expiry_time - time.time()) if unlock_expiry_time else 0
+                     cv2.putText(frame, f"ACCESS GRANTED ({rem}s)", (50, frame.shape[0] - 50), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
+
+                if pending_rfid_user:
+                     rem = int(RFID_FACE_TIMEOUT - (time.time() - pending_rfid_time))
+                     cv2.putText(frame, f"WAITING FOR FACE: {pending_rfid_user} ({rem}s)", (50, frame.shape[0] - 80), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+                door_status_text = "DOOR: OPEN" if door_lock.is_door_open() else "DOOR: CLOSED"
+                door_status_color = (0, 0, 255) if door_lock.is_door_open() else (255, 255, 255)
+                cv2.putText(frame, door_status_text, (frame.shape[1] - 200, 30), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, door_status_color, 2)
+
+                cv2.imshow('Face Recognition System', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            elif config.HEADLESS:
+                time.sleep(0.01)
 
     except KeyboardInterrupt:
         print("\nKeyboard interrupt received.")
     finally:
         print("🧹 Turning off Camera and GPIO pins...")
         recog_thread.stop()
-        cap.release()
+        if cap: cap.release()
         if not config.HEADLESS:
-            cv2.destroyAllWindows() #closes camera window forcefully
+            cv2.destroyAllWindows()
         logger.close()
         door_lock.cleanup()
         GPIO.cleanup()
         rfid_reader.release()
-
 
 if __name__ == "__main__":
     main()

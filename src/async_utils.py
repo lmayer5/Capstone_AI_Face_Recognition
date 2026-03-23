@@ -44,8 +44,8 @@ class FaceRecognitionThread(threading.Thread):
                 
                 # Logic
                 if name != "Unknown":
-                    print(f"[THREAD] Match: {name} ({distance:.2f})")
-                    self.door_lock.unlock()
+                    print(f"[THREAD] Face Match: {name} ({distance:.2f}). Waiting for RFID...")
+                    # 2FA requirement: do NOT unlock the door here! Main loop handles it after RFID.
                     
                     # Log
                     self.logger.log_event(name, "access_granted", 1.0 - distance)
