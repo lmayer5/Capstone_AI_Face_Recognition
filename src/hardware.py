@@ -74,6 +74,15 @@ class DoorLock:
         else:
             print(">> [HARDWARE] LEDs: SCANNING (Yellow)")
 
+   def set_unknown(self):
+        """Yellow Off, Red ON, Green OFF — indicates Unknown face."""
+        if self.is_pi:
+            self.GPIO.output(self.pin_yellow, self.GPIO.LOW)
+            self.GPIO.output(self.pin_red, self.GPIO.HIGH)
+            self.GPIO.output(self.pin_green, self.GPIO.LOW)
+        else:
+            print(">> [HARDWARE] LEDs: SCANNING (Yellow)")    
+
     # --- Lock Control ---
 
     def unlock(self):
