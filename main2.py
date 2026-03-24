@@ -176,6 +176,10 @@ def main():
                             f"for {task['employeeId']} ({task['faceName']})"
                         )
                         wake_camera()
+                    
+                        clear_pending_rfid()
+                        recent_face_name = None
+                        recent_face_time = 0.0
 
                         # Clear any active access state before enrollment
                         clear_pending_rfid()
@@ -189,10 +193,10 @@ def main():
                 try:
                     if not camera_active or cap is None:
                         wake_camera()
-
+            
                     print("[ENROLLMENT] Processing enrollment job...")
-                    processed = process_one_enrollment_task(cap, rfid_reader)
-
+                    processed = process_one_enrollment_task(cap, rfid_reader, active_enrollment_task)
+            
                     if processed:
                         print("[ENROLLMENT] Task processing finished.")
                     else:
@@ -206,7 +210,7 @@ def main():
                     recent_face_time = 0.0
                     clear_pending_rfid()
                     last_activity_time = time.time()
-
+            
                 time.sleep(0.2)
                 continue
 
