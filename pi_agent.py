@@ -282,20 +282,11 @@ def read_rfid_uid(reader, timeout_seconds: float = RFID_CAPTURE_TIMEOUT) -> str:
 # Enrollment runner for use from main.py
 # -------------------------------------------------------------------
 
-def process_one_enrollment_task(camera, rfid_reader) -> bool:
+def process_one_enrollment_task(camera, rfid_reader, task: dict) -> bool:
     """
-    Helper function that main.py can call periodically.
+    Helper function that main.py can call after it already fetched a task.
     Returns True if a task was processed, otherwise False.
-
-    Flow:
-      1. fetch task from backend
-      2. capture stable face embedding from provided camera
-      3. save embedding locally
-      4. read RFID from provided reader
-      5. save local RFID mapping
-      6. report result to backend
     """
-    task = fetch_enrollment_task()
     if not task:
         return False
 
